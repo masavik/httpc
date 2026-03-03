@@ -50,13 +50,13 @@ type ErlHttpOption {
 pub type TlsVerification {
   NoVerification
   VerifyWithSystemCAs
-  VerifyWithCustomCA(cacert: String)
+  VerifyWithCustomCA(cacert: BitArray)
 }
 
 /// Client Certificate options for mTLS authentication
 pub type ClientCert {
   NoClientCert
-  ClientCert(cert: String, key: String)
+  ClientCert(cert: BitArray, key: BitArray)
 }
 
 type BodyFormat {
