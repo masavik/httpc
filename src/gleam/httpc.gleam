@@ -6,6 +6,7 @@ import gleam/http/request.{type Request}
 import gleam/http/response.{type Response, Response}
 import gleam/list
 import gleam/result
+import gleam/string
 import gleam/uri
 
 pub type HttpError {
@@ -151,11 +152,11 @@ pub fn dispatch_bits(
 
   let ssl_opts = case config.client_cert {
     NoClientCert -> ssl_opts
-    ClientCert(cert, key) -> [
-      Cert(pem_to_der(cert)),
-      Key(pem_key_decode(key)),
-      ..ssl_opts
-    ]
+    ClientCert(cert, key) -> {
+      let assert Ok(cert_str) = bit_array.to_string(cert)
+      let assert Ok(key_str) = bit_array.to_string(key)
+      [Cert(pem_to_der(cert_str)), Key(pem_key_decode(key_str)), ..ssl_opts]
+    }
   }
 
   let erl_http_options = case ssl_opts {
@@ -256,7 +257,7 @@ pub fn verify_tls(config: Configuration, which: Bool) -> Configuration {
 /// New function accepting all verification modes
 pub fn with_tls_verification(
   config: Configuration,
-  mode: TlsVerification
+  mode: TlsVerification,
 ) -> Configuration {
   Builder(..config, verify_tls: mode)
 }
@@ -264,7 +265,7 @@ pub fn with_tls_verification(
 /// New function accepting client cert mTLS
 pub fn with_client_cert(
   config: Configuration,
-  cert: ClientCert
+  cert: ClientCert,
 ) -> Configuration {
   Builder(..config, client_cert: cert)
 }
