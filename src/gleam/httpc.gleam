@@ -6,6 +6,7 @@ import gleam/http/request.{type Request}
 import gleam/http/response.{type Response, Response}
 import gleam/list
 import gleam/result
+import gleam/string
 import gleam/uri
 
 pub type HttpError {
@@ -15,6 +16,12 @@ pub type HttpError {
   FailedToConnect(ip4: ConnectError, ip6: ConnectError)
   /// The response was not received within the configured timeout period.
   ResponseTimeout
+  /// Failed to parce CA certificate
+  InvalidCACertificate
+  /// Failed to parse client certificate
+  InvalidClientCertificate
+  /// Failed to parse client Key
+  InvalidClientKey
 }
 
 pub type ConnectError {
@@ -28,10 +35,29 @@ fn default_user_agent() -> #(Charlist, Charlist)
 @external(erlang, "gleam_httpc_ffi", "normalise_error")
 fn normalise_error(error: Dynamic) -> HttpError
 
+@external(erlang, "gleam_httpc_ffi", "pem_to_der")
+fn pem_to_der(pem: String) -> BitArray
+
+@external(erlang, "gleam_httpc_ffi", "pem_key_decode")
+fn pem_key_decode(pem: String) -> BitArray
+
 type ErlHttpOption {
   Ssl(List(ErlSslOption))
   Autoredirect(Bool)
   Timeout(Int)
+}
+
+/// TLS Verification options for HTTPS connections
+pub type TlsVerification {
+  NoVerification
+  VerifyWithSystemCAs
+  VerifyWithCustomCA(cacert: BitArray)
+}
+
+/// Client Certificate options for mTLS authentication
+pub type ClientCert {
+  NoClientCert
+  ClientCert(cert: BitArray, key: BitArray)
 }
 
 type BodyFormat {
@@ -53,6 +79,9 @@ type Inet6fb4 {
 
 type ErlSslOption {
   Verify(ErlVerifyOption)
+  Cacerts(BitArray)
+  Cert(BitArray)
+  Key(BitArray)
 }
 
 type ErlVerifyOption {
@@ -115,10 +144,26 @@ pub fn dispatch_bits(
     Autoredirect(config.follow_redirects),
     Timeout(config.timeout),
   ]
-  let erl_http_options = case config.verify_tls {
-    True -> erl_http_options
-    False -> [Ssl([Verify(VerifyNone)]), ..erl_http_options]
+  let ssl_opts = case config.verify_tls {
+    NoVerification -> [Verify(VerifyNone)]
+    VerifyWithSystemCAs -> []
+    VerifyWithCustomCA(cacert) -> [Cacerts(pem_to_der(cacert))]
   }
+
+  let ssl_opts = case config.client_cert {
+    NoClientCert -> ssl_opts
+    ClientCert(cert, key) -> {
+      let assert Ok(cert_str) = bit_array.to_string(cert)
+      let assert Ok(key_str) = bit_array.to_string(key)
+      [Cert(pem_to_der(cert_str)), Key(pem_key_decode(key_str)), ..ssl_opts]
+    }
+  }
+
+  let erl_http_options = case ssl_opts {
+    [] -> erl_http_options
+    _ -> [Ssl(ssl_opts), ..erl_http_options]
+  }
+
   let erl_options = [BodyFormat(Binary), SocketOpts([Ipfamily(Inet6fb4)])]
 
   use response <- result.try(
@@ -159,7 +204,10 @@ pub opaque type Configuration {
     /// man-in-the-middle attacks and other security risks. Do not do this unless
     /// you are sure and you understand the risks.
     ///
-    verify_tls: Bool,
+    verify_tls: TlsVerification,
+    /// Client Certs for mTLS
+    ///
+    client_cert: ClientCert,
     /// Whether to follow redirects.
     ///
     follow_redirects: Bool,
@@ -173,13 +221,19 @@ pub opaque type Configuration {
 ///
 /// # Defaults
 ///
-/// - TLS is verified.
+/// - TLS is verified using system CAs.
+/// - No client certificate (no mTLS).
 /// - Redirects are not followed.
 /// - The timeout for the response to be received is 30 seconds from when the
 ///   request is sent.
 ///
 pub fn configure() -> Configuration {
-  Builder(verify_tls: True, follow_redirects: False, timeout: 30_000)
+  Builder(
+    verify_tls: VerifyWithSystemCAs,
+    client_cert: NoClientCert,
+    follow_redirects: False,
+    timeout: 30_000,
+  )
 }
 
 /// Set whether to verify the TLS certificate of the server.
@@ -191,8 +245,29 @@ pub fn configure() -> Configuration {
 /// man-in-the-middle attacks and other security risks. Do not do this unless
 /// you are sure and you understand the risks.
 ///
+@deprecated("Use with_tls_verification/2 instead")
 pub fn verify_tls(config: Configuration, which: Bool) -> Configuration {
-  Builder(..config, verify_tls: which)
+  let mode = case which {
+    True -> VerifyWithSystemCAs
+    False -> NoVerification
+  }
+  Builder(..config, verify_tls: mode)
+}
+
+/// New function accepting all verification modes
+pub fn with_tls_verification(
+  config: Configuration,
+  mode: TlsVerification,
+) -> Configuration {
+  Builder(..config, verify_tls: mode)
+}
+
+/// New function accepting client cert mTLS
+pub fn with_client_cert(
+  config: Configuration,
+  cert: ClientCert,
+) -> Configuration {
+  Builder(..config, client_cert: cert)
 }
 
 /// Set whether redirects should be followed automatically.
